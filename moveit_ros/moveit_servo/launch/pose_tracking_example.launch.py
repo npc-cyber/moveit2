@@ -78,6 +78,7 @@ def generate_launch_description():
         output="screen",
     )
 
+    # 广播关节状态的节点
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -90,6 +91,11 @@ def generate_launch_description():
         ],
     )
 
+    # 控制机械臂的节点
+    # 那这个就比较简单了 不管是move_group 还是move_servo 
+    # 反正最后的轨迹都要发送给这个节点接收
+    # 通过这个可以看到是他的话题
+    # ros2 node info /panda_arm_controller --include-hidden
     panda_arm_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",

@@ -94,13 +94,20 @@ ServoCalcs::ServoCalcs(const rclcpp::Node::SharedPtr& node,
   }
 
   // Subscribe to command topics
+  // 这个地方是订阅消息的地方
+  // 可以看到这里就订阅了两个与操控机械臂有关的消息
+  // 一个传入末端线速度  一个传入关节角速度
   twist_stamped_sub_ = node_->create_subscription<geometry_msgs::msg::TwistStamped>(
       parameters_->cartesian_command_in_topic, rclcpp::SystemDefaultsQoS(),
       [this](const geometry_msgs::msg::TwistStamped::ConstSharedPtr& msg) { return twistStampedCB(msg); });
 
   joint_cmd_sub_ = node_->create_subscription<control_msgs::msg::JointJog>(
       parameters_->joint_command_in_topic, rclcpp::SystemDefaultsQoS(),
-      [this](const control_msgs::msg::JointJog::ConstSharedPtr& msg) { return jointCmdCB(msg); });
+      [this](const control_msgs::msg::JointJog::ConstSharedPtr& msg) {
+        // 这个地方只负责多线程记录消息 latest_joint_cmd_
+        // class 的函数 负责处理latest_joint_cmd_
+        return jointCmdCB(msg);
+      });
 
   // ROS Server for allowing drift in some dimensions
   drift_dimensions_server_ = node_->create_service<moveit_msgs::srv::ChangeDriftDimensions>(
@@ -200,6 +207,8 @@ ServoCalcs::ServoCalcs(const rclcpp::Node::SharedPtr& node,
                 "calculations instead.",
                 joint_model_group_->getName().c_str());
   }
+  // use_inv_jacobian_ = true;
+  RCLCPP_DEBUG(LOGGER, (std::string("find pose") + std::string(use_inv_jacobian_ ? "use_inv_jacobian " : "not use_inv_jacobian")).c_str());
 }
 
 ServoCalcs::~ServoCalcs()
@@ -317,6 +326,7 @@ void ServoCalcs::mainCalcLoop()
 
 void ServoCalcs::calculateSingleIteration()
 {
+  // 这个地方是具体执行动作的地方
   // Publish status each loop iteration
   auto status_msg = std::make_unique<std_msgs::msg::Int8>();
   status_msg->data = static_cast<int8_t>(status_);
@@ -339,6 +349,7 @@ void ServoCalcs::calculateSingleIteration()
     joint_servo_cmd_ = *latest_joint_cmd_;
 
   // Check for stale cmds
+  // 如果距离上次时间较长 可以更新这个地方为true
   twist_command_is_stale_ = ((node_->now() - latest_twist_command_stamp_) >=
                              rclcpp::Duration::from_seconds(parameters_->incoming_command_timeout));
   joint_command_is_stale_ = ((node_->now() - latest_joint_command_stamp_) >=
@@ -351,16 +362,54 @@ void ServoCalcs::calculateSingleIteration()
   // Calculate this transform to ensure it is available via C++ API
   // We solve (planning_frame -> base -> robot_link_command_frame)
   // by computing (base->planning_frame)^-1 * (base->robot_link_command_frame)
+  // 这几个 tf 需要关注一下 后续看ee link 规划时需要用到这个
+  // tf 也没问题啊 为什么坐标轴不对
+  // {
+  //   Eigen::Isometry3d transform = current_state_->getGlobalLinkTransform(parameters_->planning_frame);
+  //   Eigen::Quaterniond quaternion(transform.rotation());
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   Eigen::Vector3d translation = transform.translation();
+  //   RCLCPP_WARN(LOGGER, "planning_frame Quaternion Translation: (%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f)",
+  //               quaternion.x(), quaternion.y(), quaternion.z(), quaternion.w(), translation.x(), translation.y(),
+  //               translation.z());
+  // }
+
+  // {
+  //   // 这个地方是 eelink到world的
+  //   // 和rviz的一样
+  //   // 也就是 P_world = RT_ee_2_world * P_ee 这个已经确认过了 没有错误
+  //   Eigen::Isometry3d transform = current_state_->getGlobalLinkTransform(parameters_->ee_frame_name);
+  //   Eigen::Quaterniond quaternion(transform.rotation());
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   Eigen::Vector3d translation = transform.translation();
+  //   RCLCPP_WARN(LOGGER, "ee_frame_name Quaternion Translation: (%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f)",
+  //               quaternion.x(), quaternion.y(), quaternion.z(), quaternion.w(), translation.x(), translation.y(),
+  //               translation.z());
+  // }
+
   tf_moveit_to_robot_cmd_frame_ = current_state_->getGlobalLinkTransform(parameters_->planning_frame).inverse() *
                                   current_state_->getGlobalLinkTransform(robot_link_command_frame_);
 
   // Calculate the transform from MoveIt planning frame to End Effector frame
   // Calculate this transform to ensure it is available via C++ API
+  // 这个地方就是 RT_eelink_to_planing_frame
   tf_moveit_to_ee_frame_ = current_state_->getGlobalLinkTransform(parameters_->planning_frame).inverse() *
                            current_state_->getGlobalLinkTransform(parameters_->ee_frame_name);
 
+  // {
+  //   // RT_eelink_to_planing_frame
+  //   Eigen::Isometry3d transform = tf_moveit_to_ee_frame_;
+  //   Eigen::Quaterniond quaternion(transform.rotation());
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   Eigen::Vector3d translation = transform.translation();
+  //   RCLCPP_WARN(LOGGER, "tf_moveit_to_ee_frame_ Quaternion Translation: (%.6f, %.6f, %.6f, %.6f, %.6f, %.6f, %.6f)",
+  //               quaternion.x(), quaternion.y(), quaternion.z(), quaternion.w(), translation.x(), translation.y(),
+  //               translation.z());
+  // }
+
   if (!use_inv_jacobian_)
   {
+    // 这个是 RT_tip_frame_to_base
     ik_base_to_tip_frame_ = current_state_->getGlobalLinkTransform(ik_solver_->getBaseFrame()).inverse() *
                             current_state_->getGlobalLinkTransform(ik_solver_->getTipFrame());
   }
@@ -393,6 +442,8 @@ void ServoCalcs::calculateSingleIteration()
   // Only run commands if not stale and nonzero
   if (have_nonzero_twist_stamped_ && !twist_command_is_stale_)
   {
+    rclcpp::Clock& clock = *node_->get_clock();
+    RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "begin cartesian servoing");
     if (!cartesianServoCalcs(twist_stamped_cmd_, *joint_trajectory))
     {
       resetLowPassFilters(original_joint_state_);
@@ -401,6 +452,7 @@ void ServoCalcs::calculateSingleIteration()
   }
   else if (have_nonzero_joint_command_ && !joint_command_is_stale_)
   {
+    // 上面的不管 这个地方我们获取到了轨迹
     if (!jointServoCalcs(joint_servo_cmd_, *joint_trajectory))
     {
       resetLowPassFilters(original_joint_state_);
@@ -409,6 +461,7 @@ void ServoCalcs::calculateSingleIteration()
   }
   else
   {
+    // 这个地方就是不动 角度改成 last_sent_command_ 速度改为0 就是不动
     // Joint trajectory is not populated with anything, so set it to the last positions and 0 velocity
     *joint_trajectory = *last_sent_command_;
     for (auto& point : joint_trajectory->points)
@@ -420,6 +473,7 @@ void ServoCalcs::calculateSingleIteration()
   // Print a warning to the user if both are stale
   if (twist_command_is_stale_ && joint_command_is_stale_)
   {
+    // 最终都是传入一个关节角的轨迹
     filteredHalt(*joint_trajectory);
   }
   else
@@ -487,6 +541,21 @@ void ServoCalcs::calculateSingleIteration()
       // See http://wiki.ros.org/joint_trajectory_controller#Trajectory_replacement
       joint_trajectory->header.stamp = rclcpp::Time(0);
       *last_sent_command_ = *joint_trajectory;
+      // 在这个地方发送关节角 我踏马的 这个又是给谁接收的呢
+      // for (std::size_t i = 0; i < joint_trajectory->points.size(); ++i)
+      // {
+      //   // 这个地方有问题 只有一个关节要动 多个关节都发送了数据
+      //   rclcpp::Clock& clock = *node_->get_clock();
+      //   RCLCPP_WARN_STREAM_THROTTLE(
+      //       LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+      //       "topic echo change joint delta "
+      //           << joint_trajectory->points.size() << " || " << i << " || " << joint_trajectory->points[i].positions[0]
+      //           << " || " << joint_trajectory->points[i].positions[1] << " || "
+      //           << joint_trajectory->points[i].positions[2] << " || " << joint_trajectory->points[i].positions[3]
+      //           << " || " << joint_trajectory->points[i].positions[4] << " || "
+      //           << joint_trajectory->points[i].positions[5] << " || " << joint_trajectory->points[i].positions[6]);
+      // }
+      // 其实就传了一个关节 但是其他关节有数值误差
       trajectory_outgoing_cmd_pub_->publish(std::move(joint_trajectory));
     }
     else if (parameters_->command_out_type == "std_msgs/Float64MultiArray")
@@ -525,6 +594,10 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
     return false;
 
   // Set uncontrolled dimensions to 0 in command frame
+  // The dimensions to control. In the command frame. [x, y, z, roll, pitch, yaw]
+  // 传入的是 坐标增量 和 欧拉角增量 ?
+  // 其实不是的 传入的还是 末端坐标速度 和 末端欧拉角速度
+  // scaleCartesianCommand() 函数可以解释
   enforceControlDimensions(cmd);
 
   // Transform the command to the MoveGroup planning frame
@@ -533,6 +606,7 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
     Eigen::Vector3d translation_vector(cmd.twist.linear.x, cmd.twist.linear.y, cmd.twist.linear.z);
     Eigen::Vector3d angular_vector(cmd.twist.angular.x, cmd.twist.angular.y, cmd.twist.angular.z);
 
+    // 看来是把速度转换到 planning frame 上
     // If the incoming frame is empty or is the command frame, we use the previously calculated tf
     if (cmd.header.frame_id.empty() || cmd.header.frame_id == robot_link_command_frame_)
     {
@@ -555,6 +629,10 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
       translation_vector = tf_moveit_to_incoming_cmd_frame.linear() * translation_vector;
       angular_vector = tf_moveit_to_incoming_cmd_frame.linear() * angular_vector;
     }
+    rclcpp::Clock& clock = *node_->get_clock();
+    RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+                                "begin cartesian servoing " << parameters_->planning_frame);
+    RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "cmd.header.frame_id " << cmd.header.frame_id);
 
     // Put these components back into a TwistStamped
     cmd.header.frame_id = parameters_->planning_frame;
@@ -566,10 +644,24 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
     cmd.twist.angular.z = angular_vector(2);
   }
 
+  {
+    // 从这个地方看也是正确的
+    // tf监听是对的 最后的dx也是对的
+    // 难道是jacobian的计算有问题?
+    rclcpp::Clock& clock = *node_->get_clock();
+    RCLCPP_INFO_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+                                "final cmd prar " << "frame id " << cmd.header.frame_id << "x " << cmd.twist.linear.x
+                                                  << " y " << cmd.twist.linear.y << " z " << cmd.twist.linear.z
+                                                  << "roll " << cmd.twist.angular.x << " pitch " << cmd.twist.angular.y
+                                                  << " yaw " << cmd.twist.angular.z);
+  }
+
+  // scaleCartesianCommand 明显又乘以时间了
   Eigen::VectorXd delta_x = scaleCartesianCommand(cmd);
 
   Eigen::MatrixXd jacobian = current_state_->getJacobian(joint_model_group_);
 
+  // 我明白了 这个地方类似于之前matlab的相机标定 把不能优化的变量锁住 不让有增量delta
   removeDriftDimensions(jacobian, delta_x);
 
   Eigen::JacobiSVD<Eigen::MatrixXd> svd =
@@ -595,6 +687,9 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
     // Poses passed to IK solvers are assumed to be in some tip link (usually EE) reference frame
     // First, find the new tip link position without newly applied rotation
 
+    // bug_fix : 原因找到了 我们有两个base_link 和一个 world 没有对齐
+    // tf_pos_delta 是 world 上的增量  不等base_libk上的增量
+    // RT_tip_frame_to_base
     auto tf_no_new_rot = tf_pos_delta * ik_base_to_tip_frame_;
     // we want the rotation to be applied in the requested reference frame,
     // but we want the rotation to be about the EE point in space, not the origin.
@@ -616,11 +711,25 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
     auto tf = tf_pos_translation * tf_rot_delta * tf_neg_translation * tf_no_new_rot;
     geometry_msgs::msg::Pose next_pose = tf2::toMsg(tf);
 
+    {
+      // 从这个地方看也是正确的
+      // tf监听是对的 最后的dx也是对的
+      // 难道是jacobian的计算有问题?
+      rclcpp::Clock& clock = *node_->get_clock();
+      RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+                                  "next_pose " << next_pose.position.x << " " << next_pose.position.y << " "
+                                               << next_pose.position.z << next_pose.orientation.x << " "
+                                               << next_pose.orientation.y << " " << next_pose.orientation.z << " "
+                                               << next_pose.orientation.w);
+    }
+
     // setup for IK call
     std::vector<double> solution(num_joints_);
     moveit_msgs::msg::MoveItErrorCodes err;
     kinematics::KinematicsQueryOptions opts;
     opts.return_approximate_solution = true;
+    // searchPositionIK 也是虚函数 需要各个IK插件重写
+    // 这个也是求运动学逆解的
     if (ik_solver_->searchPositionIK(next_pose, internal_joint_state_.position, parameters_->publish_period / 2.0,
                                      solution, err, opts))
     {
@@ -639,15 +748,33 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
   else
   {
     // no supported IK plugin, use inverse Jacobian
+    // 直接用 use inverse Jacobian 得到关节增量 也就是根据末端增量得到关节增量
+    // 也就是那个公式 https://www.zhihu.com/question/531815112/answer/2476607222
+
+    // ros中做机械臂笛卡尔空间规划如何避免路径突变 博士也是调参
+    // https://www.zhihu.com/question/398666486/answer/1258960217
+
+    // https://www.zhihu.com/question/67687838/answer/2063760318 这个必须看一下
     delta_theta_ = pseudo_inverse * delta_x;
   }
 
+  // 打印 delta_theta_ 到一行
+  // {
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   RCLCPP_INFO_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "point 1 delta_theta_: " << delta_theta_.transpose());
+  // }
   delta_theta_ *= velocityScalingFactorForSingularity(joint_model_group_, delta_x, svd, pseudo_inverse,
                                                       parameters_->hard_stop_singularity_threshold,
                                                       parameters_->lower_singularity_threshold,
                                                       parameters_->leaving_singularity_threshold_multiplier,
                                                       *node_->get_clock(), current_state_, status_);
+  // // 打印 delta_theta_ 到一行
+  // {
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   RCLCPP_INFO_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "point 2 delta_theta_: " << delta_theta_.transpose());
+  // }
 
+  // 最终笛卡尔规划 要转到关节规划
   return internalServoUpdate(delta_theta_, joint_trajectory, ServoType::CARTESIAN_SPACE);
 }
 
@@ -655,10 +782,12 @@ bool ServoCalcs::jointServoCalcs(const control_msgs::msg::JointJog& cmd,
                                  trajectory_msgs::msg::JointTrajectory& joint_trajectory)
 {
   // Check for nan's
+  // 这个地方是demo发送的数据 还没有解析成 trajectory
   if (!checkValidCommand(cmd))
     return false;
 
   // Apply user-defined scaling
+  // 简单的速度乘以时间 这个地方得到的是关节角的增量而不是关节角
   delta_theta_ = scaleJointCommand(cmd);
 
   // Perform internal servo with the command
@@ -693,6 +822,8 @@ bool ServoCalcs::internalServoUpdate(Eigen::ArrayXd& delta_theta,
     rclcpp::Clock& clock = *node_->get_clock();
     RCLCPP_ERROR_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "Halting for collision!");
   }
+  // 这个地方直接对增量进行减速
+  // 我比较好奇的一点时 发一次消息是速度一直不变吗
   delta_theta *= collision_scale;
 
   // Loop thru joints and update them, calculate velocities, and filter
@@ -725,11 +856,38 @@ bool ServoCalcs::internalServoUpdate(Eigen::ArrayXd& delta_theta,
   // compose outgoing message
   composeJointTrajMessage(internal_joint_state_, joint_trajectory);
 
+  // for (std::size_t i = 0; i < joint_trajectory.points.size(); ++i)
+  // {
+  //   // 这个地方有问题 只有一个关节要动 多个关节都发送了数据
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   RCLCPP_WARN_STREAM_THROTTLE(
+  //       LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+  //       "internalServoUpdate1 joint delta "
+  //           << joint_trajectory.points.size() << " || " << i << " || " << joint_trajectory.points[i].positions[0]
+  //           << " || " << joint_trajectory.points[i].positions[1] << " || " << joint_trajectory.points[i].positions[2]
+  //           << " || " << joint_trajectory.points[i].positions[3] << " || " << joint_trajectory.points[i].positions[4]
+  //           << " || " << joint_trajectory.points[i].positions[5] << " || " << joint_trajectory.points[i].positions[6]);
+  // }
+
   // Modify the output message if we are using gazebo
+  // 应该是时钟周期不同 需要重新计算
   if (parameters_->use_gazebo)
   {
     insertRedundantPointsIntoTrajectory(joint_trajectory, gazebo_redundant_message_count_);
   }
+
+  // for (std::size_t i = 0; i < joint_trajectory.points.size(); ++i)
+  // {
+  //   // 这个地方有问题 只有一个关节要动 多个关节都发送了数据
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   RCLCPP_WARN_STREAM_THROTTLE(
+  //       LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+  //       "internalServoUpdate2 joint delta "
+  //           << joint_trajectory.points.size() << " || " << i << " || " << joint_trajectory.points[i].positions[0]
+  //           << " || " << joint_trajectory.points[i].positions[1] << " || " << joint_trajectory.points[i].positions[2]
+  //           << " || " << joint_trajectory.points[i].positions[3] << " || " << joint_trajectory.points[i].positions[4]
+  //           << " || " << joint_trajectory.points[i].positions[5] << " || " << joint_trajectory.points[i].positions[6]);
+  // }
 
   return true;
 }
@@ -745,18 +903,48 @@ bool ServoCalcs::applyJointUpdate(const Eigen::ArrayXd& delta_theta, sensor_msgs
                                  "Lengths of output and increments do not match.");
     return false;
   }
-
+  // // 添加debug
+  // {
+  //   // 到这个地方是正常的 发送一个关节就只有一个关节
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+  //                                 "applyJointUpdate1() change joint delta "
+  //                                 << " || " << joint_state.position[0]
+  //                                 << " || " << joint_state.position[1]
+  //                                 << " || " << joint_state.position[2]
+  //                                 << " || " << joint_state.position[3]
+  //                                 << " || " << joint_state.position[4]
+  //                                 << " || " << joint_state.position[5]
+  //                                 << " || " << joint_state.position[6] );
+  // }
   for (std::size_t i = 0; i < joint_state.position.size(); ++i)
   {
     // Increment joint
     joint_state.position[i] += delta_theta[i];
   }
+  // // 添加debug
+  // {
+  //   // 到这个地方是正常的 发送一个关节就只有一个关节
+  //   rclcpp::Clock& clock = *node_->get_clock();
+  //   RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+  //                               "applyJointUpdate2() change joint delta "
+  //                               << " || " << delta_theta[0]
+  //                               << " || " << delta_theta[1]
+  //                               << " || " << delta_theta[2]
+  //                               << " || " << delta_theta[3]
+  //                               << " || " << delta_theta[4]
+  //                               << " || " << delta_theta[5]
+  //                               << " || " << delta_theta[6] );
+  // }
 
   smoother_->doSmoothing(joint_state.position);
 
   for (std::size_t i = 0; i < joint_state.position.size(); ++i)
   {
     // Calculate joint velocity
+    // 这个地方不是傻逼吗
+    // 之前传入一个关节角速度 计算增量
+    // 现在又根据关节角增量再来算速度
     joint_state.velocity[i] =
         (joint_state.position.at(i) - original_joint_state_.position.at(i)) / parameters_->publish_period;
   }
@@ -1041,10 +1229,14 @@ Eigen::VectorXd ServoCalcs::scaleJointCommand(const control_msgs::msg::JointJog&
       continue;
     }
     // Apply user-defined scaling if inputs are unitless [-1:1]
+    // 大概明白了 我们应该只能发送速度
+    // 然后他根据这个速度乘以 parameters_->publish_period 得到最终的关节角
     if (parameters_->command_in_type == "unitless")
+      // unitless 应该是归一化速度 -1 就是全速反方向
       result[c] = command.velocities[m] * parameters_->joint_scale * parameters_->publish_period;
     // Otherwise, commands are in m/s and rad/s
     else if (parameters_->command_in_type == "speed_units")
+      // speed_units 就是发送明确的关节速度
       result[c] = command.velocities[m] * parameters_->publish_period;
     else
     {
@@ -1052,6 +1244,13 @@ Eigen::VectorXd ServoCalcs::scaleJointCommand(const control_msgs::msg::JointJog&
       RCLCPP_ERROR_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
                                    "Unexpected command_in_type, check yaml file.");
     }
+    // // 添加debug
+    // {
+    //   // 到这个地方是正常的 发送一个关节就只有一个关节
+    //   rclcpp::Clock& clock = *node_->get_clock();
+    //   RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+    //                               "scaleJointCommand() change joint " << command.joint_names[m]);
+    // }
   }
 
   return result;

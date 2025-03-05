@@ -128,6 +128,8 @@ double velocityScalingFactorForSingularity(const moveit::core::JointModelGroup* 
   {
     vector_toward_singularity *= -1;
   }
+  RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "ini_condition" << ini_condition);
+  
 
   // If this dot product is positive, we're moving toward singularity
   double dot = vector_toward_singularity.dot(commanded_twist);

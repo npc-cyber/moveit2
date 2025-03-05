@@ -58,10 +58,20 @@ joint_limit_margin: 0.1 # added as a buffer to joint limits [radians]. If moving
 leaving_singularity_threshold_multiplier: 2.0 # Multiply the hard stop limit by this when leaving singularity (see https://github.com/ros-planning/moveit2/pull/620)
 
 ## Topic names
-cartesian_command_in_topic: ~/delta_twist_cmds  # Topic for incoming Cartesian twist commands
-joint_command_in_topic: ~/delta_joint_cmds # Topic for incoming joint angle commands
+## ~ 在ROS（Robot Operating System）中，配置文件中的 ~ 符号通常用于表示相对命名空间（namespace）
+## 这个地方topic的name反而不是很重要 
+## 只需要知道 
+## cartesian_command_in_topic 是传递位姿的
+## joint_command_in_topic 是传递关节角度的
+cartesian_command_in_topic: ~/test_twist_cmds  # Topic for incoming Cartesian twist commands
+joint_command_in_topic: ~/test_joint_cmds # Topic for incoming joint angle commands
 joint_topic: /joint_states
 status_topic: ~/status # Publish status to this topic
+## servo算出机械臂角度时候 发送轨迹执行 
+## 可以找到谁订阅了这个消息
+## ros2 topic info /panda_arm_controller/joint_trajectory -v 
+## 可以找到订阅者是 panda_arm_controller
+## 那个机械臂的控制大概率也是 panda_arm_controller 做的
 command_out_topic: /panda_arm_controller/joint_trajectory # Publish outgoing commands here
 
 ## Collision checking for the entire robot body

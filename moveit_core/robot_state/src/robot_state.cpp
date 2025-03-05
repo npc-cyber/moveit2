@@ -1293,6 +1293,8 @@ bool RobotState::getJacobian(const JointModelGroup* group, const LinkModel* link
                              const Eigen::Vector3d& reference_point_position, Eigen::MatrixXd& jacobian,
                              bool use_quaternion_representation) const
 {
+  // 这个地方是求雅克比矩阵的地方 
+  // 应该可以和书上对着看
   assert(checkLinkTransforms());
 
   if (!group->isChain())

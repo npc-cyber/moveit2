@@ -84,6 +84,7 @@ private:
  */
 int main(int argc, char** argv)
 {
+  // 直接跟随pose的demo
   rclcpp::init(argc, argv);
   rclcpp::Node::SharedPtr node = rclcpp::Node::make_shared("pose_tracking_demo");
 
@@ -134,6 +135,7 @@ int main(int argc, char** argv)
   // Subscribe to servo status (and log it when it changes)
   StatusMonitor status_monitor(node, servo_parameters->status_topic);
 
+  // Tolerances for pose tracking 这个是
   Eigen::Vector3d lin_tol{ 0.001, 0.001, 0.001 };
   double rot_tol = 0.01;
 

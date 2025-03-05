@@ -74,7 +74,7 @@ namespace moveit_servo
 {
 PoseTracking::PoseTracking(const rclcpp::Node::SharedPtr& node, const ServoParameters::SharedConstPtr& servo_parameters,
                            const planning_scene_monitor::PlanningSceneMonitorPtr& planning_scene_monitor)
-  : node_(node)
+  : node_(node)// 这个地方有一个node 是不是node一样就行
   , servo_parameters_(servo_parameters)
   , planning_scene_monitor_(planning_scene_monitor)
   , loop_rate_(1.0 / servo_parameters->publish_period)
@@ -97,6 +97,7 @@ PoseTracking::PoseTracking(const rclcpp::Node::SharedPtr& node, const ServoParam
   servo_->start();
 
   // Connect to Servo ROS interfaces
+  // 这个地方听消息 但是如果有多个机械臂呢
   target_pose_sub_ = node_->create_subscription<geometry_msgs::msg::PoseStamped>(
       "target_pose", rclcpp::SystemDefaultsQoS(),
       [this](const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg) { return targetPoseCallback(msg); });
@@ -165,6 +166,9 @@ PoseTrackingStatusCode PoseTracking::moveToPose(const Eigen::Vector3d& positiona
     }
 
     // Compute servo command from PID controller output and send it to the Servo object, for execution
+    // 最终这个地方只是计算线速度与角速度的
+    // 算完速度 给 servo 再计算关节角
+    // 然后再发给控制器
     twist_stamped_pub_->publish(*calculateTwistCommand());
 
     if (!loop_rate_.sleep())
@@ -308,6 +312,7 @@ geometry_msgs::msg::TwistStamped::ConstSharedPtr PoseTracking::calculateTwistCom
   }
 
   Eigen::Quaterniond q_current(command_frame_transform_.rotation());
+  // 果然还是通过这个公式来确定旋转误差的
   Eigen::Quaterniond q_error = q_desired * q_current.inverse();
 
   // Convert axis-angle to angular velocity
@@ -315,6 +320,7 @@ geometry_msgs::msg::TwistStamped::ConstSharedPtr PoseTracking::calculateTwistCom
   // Cache the angular error, for rotation tolerance checking
   angular_error_ = axis_angle.angle();
 
+  // 这个是算周期的
   double ang_vel_magnitude =
       cartesian_orientation_pids_[0].computeCommand(*angular_error_, loop_rate_.period().count());
   twist.angular.x = ang_vel_magnitude * axis_angle.axis()[0];
