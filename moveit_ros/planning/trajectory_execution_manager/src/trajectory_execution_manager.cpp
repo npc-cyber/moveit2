@@ -1418,6 +1418,7 @@ bool TrajectoryExecutionManager::executePart(std::size_t part_index)
         for (std::size_t i = 0; i < context.controllers_.size(); ++i)
         {
           moveit_controller_manager::MoveItControllerHandlePtr h;
+          // 这个地方是轨迹执行器
           try
           {
             h = controller_manager_->getControllerHandle(context.controllers_[i]);

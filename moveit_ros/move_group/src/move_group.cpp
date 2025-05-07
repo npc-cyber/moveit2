@@ -44,7 +44,7 @@
 #include <moveit/move_group/move_group_context.h>
 #include <memory>
 #include <set>
-
+// 是这一个
 static const std::string ROBOT_DESCRIPTION =
     "robot_description";  // name of the robot description (a param name, so it can be changed externally)
 

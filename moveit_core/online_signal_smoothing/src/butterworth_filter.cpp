@@ -98,6 +98,7 @@ bool ButterworthFilterPlugin::initialize(rclcpp::Node::SharedPtr node, moveit::c
   num_joints_ = num_joints;
   double filter_coeff = 1.5;
   {
+    // 他这个地方居然是监听的消息而不是直接传入参数 我真的服气的
     online_signal_smoothing::ParamListener param_listener(node_);
     filter_coeff = param_listener.get_params().butterworth_filter_coeff;
   }

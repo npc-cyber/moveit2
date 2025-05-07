@@ -45,6 +45,7 @@ bool FollowJointTrajectoryControllerHandle::sendTrajectory(const moveit_msgs::ms
 {
   RCLCPP_DEBUG_STREAM(LOGGER, "new trajectory to " << name_);
 
+  // 这个是继承父类得到的
   if (!controller_action_client_)
     return false;
 
@@ -63,6 +64,7 @@ bool FollowJointTrajectoryControllerHandle::sendTrajectory(const moveit_msgs::ms
   goal.trajectory = trajectory.joint_trajectory;
   goal.multi_dof_trajectory = trajectory.multi_dof_joint_trajectory;
 
+  // 这个地方发送action请求
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SendGoalOptions send_goal_options;
   // Active callback
   send_goal_options.goal_response_callback =

@@ -9,7 +9,7 @@ from launch_param_builder import ParameterBuilder
 
 def generate_launch_description():
     moveit_config = (
-        MoveItConfigsBuilder("moveit_resources_panda")
+        MoveItConfigsBuilder("moveit_resources_panda") # 会自动加上 _moveit_config
         .robot_description(file_path="config/panda.urdf.xacro")
         .to_moveit_configs()
     )
@@ -78,6 +78,7 @@ def generate_launch_description():
         output="screen",
     )
 
+    # 广播关节状态的节点
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -90,10 +91,30 @@ def generate_launch_description():
         ],
     )
 
+    # 控制机械臂的节点
+    # 那这个就比较简单了 不管是move_group 还是move_servo 
+    # 反正最后的轨迹都要发送给这个节点接收
+    # 通过这个可以看到是他的话题
+    # ros2 node info /panda_arm_controller --include-hidden
     panda_arm_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
         arguments=["panda_arm_controller", "-c", "/controller_manager"],
+    )
+
+    gazebo =  ExecuteProcess(
+        cmd=['gazebo', '--verbose','-s', 'libgazebo_ros_init.so', '-s', 'libgazebo_ros_factory.so'],
+        output='screen')
+
+    # Spawn robot
+    gazebo_spawn_robot = Node(
+        package="gazebo_ros",
+        executable="spawn_entity.py",
+        name="spawn_ar",
+        arguments=[
+            "-entity", "panda", "-topic", "robot_description", "-timeout", "60"
+        ],
+        output="screen",
     )
 
     return LaunchDescription(
@@ -105,5 +126,7 @@ def generate_launch_description():
             joint_state_broadcaster_spawner,
             panda_arm_controller_spawner,
             robot_state_publisher,
+            # gazebo,
+            # gazebo_spawn_robot,
         ]
     )

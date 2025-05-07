@@ -262,6 +262,11 @@ void ServoParameters::declare(const std::string& ns,
                                      ParameterDescriptorBuilder{}
                                          .type(PARAMETER_DOUBLE)
                                          .description("Start decelerating when a scene collision is this far [m]"));
+  node_parameters->declare_parameter(ns + ".use_my_servo", ParameterValue{ parameters.use_my_servo },
+                                     ParameterDescriptorBuilder{}.type(PARAMETER_BOOL).description("use_my_servo?"));
+  node_parameters->declare_parameter(
+      ns + ".max_joint_delata_period", ParameterValue{ parameters.max_joint_delata_period },
+      ParameterDescriptorBuilder{}.type(PARAMETER_DOUBLE).description("max_joint_delata_period in deg"));
 }
 
 ServoParameters ServoParameters::get(const std::string& ns,
@@ -348,6 +353,8 @@ ServoParameters ServoParameters::get(const std::string& ns,
   parameters.scene_collision_proximity_threshold =
       node_parameters->get_parameter(ns + ".scene_collision_proximity_threshold").as_double();
 
+  parameters.use_my_servo = node_parameters->get_parameter(ns + ".use_my_servo").as_bool();
+  parameters.max_joint_delata_period = node_parameters->get_parameter(ns + ".max_joint_delata_period").as_double();
   return parameters;
 }
 

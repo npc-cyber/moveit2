@@ -160,6 +160,8 @@ ServoCalcs::ServoCalcs(const rclcpp::Node::SharedPtr& node,
   // Load the smoothing plugin
   try
   {
+    // 平滑器是在这里读取的
+    //
     smoother_ = smoothing_loader_.createSharedInstance(parameters_->smoothing_filter_plugin_name);
   }
   catch (pluginlib::PluginlibException& ex)
@@ -200,6 +202,8 @@ ServoCalcs::ServoCalcs(const rclcpp::Node::SharedPtr& node,
                 "calculations instead.",
                 joint_model_group_->getName().c_str());
   }
+  // // 设置成直接默认
+  // use_inv_jacobian_ = true;
 }
 
 ServoCalcs::~ServoCalcs()
@@ -284,6 +288,9 @@ void ServoCalcs::mainCalcLoop()
     std::unique_lock<std::mutex> main_loop_lock(main_loop_mutex_);
 
     // low latency mode -- begin calculations as soon as a new command is received.
+    // 每次等待最新的消息 也就是说 开了这个如果没收到新消息 就一直卡在这
+    // 因为没解锁 main_loop_lock
+    // 也就是说 其实快速帧率需要把这个打开
     if (parameters_->low_latency_mode)
     {
       input_cv_.wait(main_loop_lock, [this] { return (new_input_cmd_ || stop_requested_); });
@@ -298,6 +305,8 @@ void ServoCalcs::mainCalcLoop()
     const auto run_duration = node_->now() - start_time;
 
     // Log warning when the run duration was longer than the period
+    // servo的速度伺服可以搞得挺快的 似乎1000hz都可以
+    // 但是这个地方只是给个警告 不是真的要停止程序
     if (run_duration.seconds() > parameters_->publish_period)
     {
       rclcpp::Clock& clock = *node_->get_clock();
@@ -393,6 +402,13 @@ void ServoCalcs::calculateSingleIteration()
   // Only run commands if not stale and nonzero
   if (have_nonzero_twist_stamped_ && !twist_command_is_stale_)
   {
+    // rclcpp::Clock& clock = *node_->get_clock();
+    // RCLCPP_WARN_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "cartesianServoCalcs");
+    // 从这个地方就可以发现了，他每次都是 根据最新的 twist_stamped_cmd_计算新轨迹
+    // 观看 cartesianServoCalcs()
+    // 可以解释我们遇到的一个现象就是 publish_period 特别小时 机械臂转得很慢
+    // 因为他其实就计算了publish_period期间的轨迹 而不是直接计算的1s内的轨迹
+    // 所以机械臂每次增加的量非常小
     if (!cartesianServoCalcs(twist_stamped_cmd_, *joint_trajectory))
     {
       resetLowPassFilters(original_joint_state_);
@@ -429,6 +445,7 @@ void ServoCalcs::calculateSingleIteration()
 
   // Skip the servoing publication if all inputs have been zero for several cycles in a row.
   // num_outgoing_halt_msgs_to_publish == 0 signifies that we should keep republishing forever.
+  // 如果有 num_outgoing_halt_msgs_to_publish个长度 没有非0的速度 那么也会停止发送
   if (!have_nonzero_command_ && done_stopping_ && (parameters_->num_outgoing_halt_msgs_to_publish != 0) &&
       (zero_velocity_count_ > parameters_->num_outgoing_halt_msgs_to_publish))
   {
@@ -437,6 +454,9 @@ void ServoCalcs::calculateSingleIteration()
     RCLCPP_DEBUG_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD, "All-zero command. Doing nothing.");
   }
   // Skip servoing publication if both types of commands are stale.
+  // 可以看出长时间没有收到新消息的话 会直接停止发送控制器消息
+  // incoming_command_timeout 如果新消息与旧消息的time_diff超过这个 incoming_command_timeout
+  // 就会停止
   else if (twist_command_is_stale_ && joint_command_is_stale_)
   {
     ok_to_publish_ = false;
@@ -451,6 +471,7 @@ void ServoCalcs::calculateSingleIteration()
 
   // Store last zero-velocity message flag to prevent superfluous warnings.
   // Cartesian and joint commands must both be zero.
+  // 如果发送的速度
   if (!have_nonzero_command_ && done_stopping_)
   {
     // Avoid overflow
@@ -485,6 +506,7 @@ void ServoCalcs::calculateSingleIteration()
     {
       // When a joint_trajectory_controller receives a new command, a stamp of 0 indicates "begin immediately"
       // See http://wiki.ros.org/joint_trajectory_controller#Trajectory_replacement
+      // 这个函数一次只发送一个topic 他的发送频率是由 mainCalcLoop() 控制的
       joint_trajectory->header.stamp = rclcpp::Time(0);
       *last_sent_command_ = *joint_trajectory;
       trajectory_outgoing_cmd_pub_->publish(std::move(joint_trajectory));
@@ -521,11 +543,106 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
                                      trajectory_msgs::msg::JointTrajectory& joint_trajectory)
 {
   // Check for nan's in the incoming command
+  // cmd使我们直接得到的命令
   if (!checkValidCommand(cmd))
     return false;
 
   // Set uncontrolled dimensions to 0 in command frame
   enforceControlDimensions(cmd);
+
+  if (parameters_->use_my_servo)
+  {
+    static geometry_msgs::msg::TwistStamped my_prev_cmd;
+    static bool my_has_my_prev_cmd = false;
+    static bool my_cmd_changed = false;
+    static bool my_find_ik = false;
+    static std::vector<double> my_solution(num_joints_);
+    if (!my_has_my_prev_cmd)
+    {
+      // 直接没有 直接记录这次的cmd
+      my_prev_cmd = cmd;
+      my_has_my_prev_cmd = true;
+      my_cmd_changed = true;
+    }
+    else
+    {
+      // 比较这次的cmd与上次的差别大不大
+      my_cmd_changed =
+          my_prev_cmd.twist.linear.x != cmd.twist.linear.x || my_prev_cmd.twist.linear.y != cmd.twist.linear.y ||
+          my_prev_cmd.twist.linear.z != cmd.twist.linear.z || my_prev_cmd.twist.angular.x != cmd.twist.angular.x ||
+          my_prev_cmd.twist.angular.y != cmd.twist.angular.y || my_prev_cmd.twist.angular.z != cmd.twist.angular.z;
+      my_prev_cmd = cmd;
+    }
+    // 直接记录cmd的位姿 这个就是我们最终想要到达的位姿
+    geometry_msgs::msg::Pose my_next_pose;
+    {
+      Eigen::Vector3d translation_vector(cmd.twist.linear.x, cmd.twist.linear.y, cmd.twist.linear.z);
+      Eigen::Vector3d angular_vector(cmd.twist.angular.x, cmd.twist.angular.y, cmd.twist.angular.z);
+      Eigen::Isometry3d yr_transform = Eigen::Isometry3d::Identity();
+      yr_transform.translation() = translation_vector;
+      Eigen::AngleAxisd rotation(angular_vector.norm(), angular_vector.normalized());
+      yr_transform.linear() = rotation.toRotationMatrix();
+      my_next_pose = tf2::toMsg(yr_transform);
+    }
+
+    moveit_msgs::msg::MoveItErrorCodes err;
+    kinematics::KinematicsQueryOptions opts;
+    // 这个地方要设置成 false 不然会返回approximate solution
+    // 我推测是这个解还在迭代过程中 没迭代完 没办法 就返回approximate solution
+    // approximate solution 不代表就接近我们要的位姿了
+    // opts.return_approximate_solution = true;
+
+    // 改变了
+    if (my_cmd_changed)
+    {
+      if (ik_solver_->searchPositionIK(my_next_pose, internal_joint_state_.position, parameters_->publish_period / 2.0,
+                                       my_solution, err, opts))
+      {
+        my_find_ik = true;
+      }
+      else
+      {
+        my_find_ik = false;
+        RCLCPP_WARN(LOGGER, "Could not find IK solution for requested motion, got error code %d", err.val);
+        return false;
+      }
+    }
+    // 找到了就这样
+    if (my_find_ik)
+    {
+      // find the difference in joint positions that will get us to the desired pose
+      const double rad2deg = 180.0 / 3.1415926;
+      const double deg2rad = 3.1415926 / 180.0;
+      const double max_joint_delata_period = parameters_->max_joint_delata_period * deg2rad;  // rad
+      for (size_t i = 0; i < num_joints_; ++i)
+      {
+        // 然后在这里设置增量  限制最大速度
+        delta_theta_.coeffRef(i) = my_solution.at(i) - internal_joint_state_.position.at(i);
+        if (std::abs(delta_theta_.coeffRef(i)) > max_joint_delata_period)
+        {
+          delta_theta_.coeffRef(i) /= std::abs(delta_theta_.coeffRef(i));
+          delta_theta_.coeffRef(i) *= max_joint_delata_period;
+        }
+      }
+      if (my_cmd_changed)
+      {
+        RCLCPP_WARN(LOGGER, "My Servo Find IK solution [ %f , %f , %f ]", my_next_pose.position.x,
+                    my_next_pose.position.y, my_next_pose.position.z);
+        RCLCPP_WARN(LOGGER, "My Servo Find IK solution [ %f , %f , %f , %f ]", my_next_pose.orientation.x,
+                    my_next_pose.orientation.y, my_next_pose.orientation.z, my_next_pose.orientation.w);
+        RCLCPP_WARN(LOGGER, "My Servo Find IK solution [ %f , %f , %f , %f , %f , %f , %f ]",
+                    my_solution.at(0) * rad2deg, my_solution.at(1) * rad2deg, my_solution.at(2) * rad2deg,
+                    my_solution.at(3) * rad2deg, my_solution.at(4) * rad2deg, my_solution.at(5) * rad2deg,
+                    my_solution.at(6) * rad2deg);
+        RCLCPP_WARN(LOGGER, "My Servo Speed [ %f , %f , %f , %f , %f , %f , %f ]", delta_theta_.coeffRef(0) * rad2deg,
+                    delta_theta_.coeffRef(1) * rad2deg, delta_theta_.coeffRef(2) * rad2deg,
+                    delta_theta_.coeffRef(3) * rad2deg, delta_theta_.coeffRef(4) * rad2deg,
+                    delta_theta_.coeffRef(5) * rad2deg, delta_theta_.coeffRef(6) * rad2deg);
+      }
+    }
+
+    return internalServoUpdate(delta_theta_, joint_trajectory, ServoType::CARTESIAN_SPACE);
+  }
 
   // Transform the command to the MoveGroup planning frame
   if (cmd.header.frame_id != parameters_->planning_frame)
@@ -566,10 +683,12 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
     cmd.twist.angular.z = angular_vector(2);
   }
 
+  // 计算笛卡尔空间的增量 一个publish_period之内的
   Eigen::VectorXd delta_x = scaleCartesianCommand(cmd);
 
   Eigen::MatrixXd jacobian = current_state_->getJacobian(joint_model_group_);
 
+  // 移除不能移动的关节
   removeDriftDimensions(jacobian, delta_x);
 
   Eigen::JacobiSVD<Eigen::MatrixXd> svd =
@@ -591,6 +710,14 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
                            Eigen::AngleAxisd(delta_x[4], Eigen::Vector3d::UnitY()) *
                            Eigen::AngleAxisd(delta_x[5], Eigen::Vector3d::UnitZ());
     tf_rot_delta.rotate(q);
+
+    /**
+     * bug:
+     * 这个地方有个bug 之前是吧delta转到plane_frame了
+     * 但是这个地方是 ik_solver_->getBaseFrame()  ik_solver_->getTipFrame()
+     * 如果把 plane_frame 设置到world 并且 world与ik_solver_->getBaseFrame()不对齐
+     * 这个地方就会出现方向不对的情况
+     */
 
     // Poses passed to IK solvers are assumed to be in some tip link (usually EE) reference frame
     // First, find the new tip link position without newly applied rotation
@@ -641,7 +768,8 @@ bool ServoCalcs::cartesianServoCalcs(geometry_msgs::msg::TwistStamped& cmd,
     // no supported IK plugin, use inverse Jacobian
     delta_theta_ = pseudo_inverse * delta_x;
   }
-
+  // 已经得到了关节的增量 这个velocityScalingFactorForSingularity就是碰撞与奇异时减速停止
+  // 这个地方先保留
   delta_theta_ *= velocityScalingFactorForSingularity(joint_model_group_, delta_x, svd, pseudo_inverse,
                                                       parameters_->hard_stop_singularity_threshold,
                                                       parameters_->lower_singularity_threshold,
@@ -696,6 +824,7 @@ bool ServoCalcs::internalServoUpdate(Eigen::ArrayXd& delta_theta,
   delta_theta *= collision_scale;
 
   // Loop thru joints and update them, calculate velocities, and filter
+  // 这个对于位置来说 是直接加在现在的关节上
   if (!applyJointUpdate(delta_theta, internal_joint_state_))
     return false;
 
@@ -723,6 +852,7 @@ bool ServoCalcs::internalServoUpdate(Eigen::ArrayXd& delta_theta,
   }
 
   // compose outgoing message
+  // 这个就是把关节转换成消息
   composeJointTrajMessage(internal_joint_state_, joint_trajectory);
 
   // Modify the output message if we are using gazebo
@@ -831,7 +961,8 @@ ServoCalcs::enforcePositionLimits(sensor_msgs::msg::JointState& joint_state) con
         break;
       }
     }
-
+    // joint_limit_margin 参数就是机械臂限制 [-180,180]
+    // 我们设置让他在 179就停止
     if (!joint->satisfiesPositionBounds(&joint_angle, -parameters_->joint_limit_margin))
     {
       const std::vector<moveit_msgs::msg::JointLimits>& limits = joint->getVariableBoundsMsg();
@@ -888,6 +1019,7 @@ void ServoCalcs::filteredHalt(trajectory_msgs::msg::JointTrajectory& joint_traje
     joint_trajectory.points[0].velocities = std::vector<double>(num_joints_, 0);
     for (std::size_t i = 0; i < num_joints_; ++i)
     {
+      // 速度是这么发布的
       joint_trajectory.points[0].velocities.at(i) =
           (joint_trajectory.points[0].positions.at(i) - original_joint_state_.position.at(i)) /
           parameters_->publish_period;
@@ -906,6 +1038,7 @@ void ServoCalcs::filteredHalt(trajectory_msgs::msg::JointTrajectory& joint_traje
 
   if (parameters_->publish_joint_accelerations)
   {
+    // 加速度是这么发布的 真发布卧槽
     joint_trajectory.points[0].accelerations = std::vector<double>(num_joints_, 0);
     for (std::size_t i = 0; i < num_joints_; ++i)
     {
@@ -942,6 +1075,7 @@ void ServoCalcs::updateJoints()
   current_state_->copyJointGroupVelocities(joint_model_group_, internal_joint_state_.velocity);
 
   // Cache the original joints in case they need to be reset
+  // 这个地方是关节的状态
   original_joint_state_ = internal_joint_state_;
 }
 
@@ -1006,6 +1140,8 @@ Eigen::VectorXd ServoCalcs::scaleCartesianCommand(const geometry_msgs::msg::Twis
   // Otherwise, commands are in m/s and rad/s
   else if (parameters_->command_in_type == "speed_units")
   {
+    // 这个地方可以看出来 我们发送的线速度 不是直接就求解最终delat_pos_and_angle的
+    // 乘以了速度，所以实际上移动速度回少很多
     result[0] = command.twist.linear.x * parameters_->publish_period;
     result[1] = command.twist.linear.y * parameters_->publish_period;
     result[2] = command.twist.linear.z * parameters_->publish_period;
@@ -1155,7 +1291,23 @@ void ServoCalcs::twistStampedCB(const geometry_msgs::msg::TwistStamped::ConstSha
 {
   const std::lock_guard<std::mutex> lock(main_loop_mutex_);
   latest_twist_stamped_ = msg;
+  // isNonZero 只要消息中任意一个不为0就行
   latest_twist_cmd_is_nonzero_ = isNonZero(*latest_twist_stamped_);
+
+  // 新增日志输出 这个已经确认过了 不会有浮点误差
+  rclcpp::Clock& clock = *node_->get_clock();
+  RCLCPP_DEBUG_STREAM_THROTTLE(LOGGER, clock, ROS_LOG_THROTTLE_PERIOD,
+                               "Received TwistStamped command:\n"
+                               "  Linear:  x="
+                                   << msg->twist.linear.x << "  y=" << msg->twist.linear.y
+                                   << "  z=" << msg->twist.linear.z
+                                   << "\n"
+                                      "  Angular: x="
+                                   << msg->twist.angular.x << "  y=" << msg->twist.angular.y
+                                   << "  z=" << msg->twist.angular.z
+                                   << "\n"
+                                      "  Non-zero status: "
+                                   << (latest_twist_cmd_is_nonzero_ ? "true" : "false"));
 
   if (msg->header.stamp != rclcpp::Time(0.))
     latest_twist_command_stamp_ = msg->header.stamp;

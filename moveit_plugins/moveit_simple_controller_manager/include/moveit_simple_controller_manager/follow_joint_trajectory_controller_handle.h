@@ -48,6 +48,7 @@ namespace moveit_simple_controller_manager
  * This is generally used for arms, but could also be used for multi-dof hands,
  * or anything using a control_mgs/FollowJointTrajectoryAction.
  */
+// controller_action_client_ 是继承父类得到的
 class FollowJointTrajectoryControllerHandle
   : public ActionBasedControllerHandle<control_msgs::action::FollowJointTrajectory>
 {

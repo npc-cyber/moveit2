@@ -70,6 +70,7 @@ void MoveGroupExecuteTrajectoryAction::initialize()
   callback_executor_.add_callback_group(callback_group_, node->get_node_base_interface());
   callback_thread_ = std::thread([this]() { callback_executor_.spin(); });
   // start the move action server
+  // 这个地方是执行器
   execute_action_server_ = rclcpp_action::create_server<ExecTrajectory>(
       node->get_node_base_interface(), node->get_node_clock_interface(), node->get_node_logging_interface(),
       node->get_node_waitables_interface(), EXECUTE_ACTION_NAME,

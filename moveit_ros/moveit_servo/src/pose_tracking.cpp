@@ -165,6 +165,7 @@ PoseTrackingStatusCode PoseTracking::moveToPose(const Eigen::Vector3d& positiona
     }
 
     // Compute servo command from PID controller output and send it to the Servo object, for execution
+    // 这个地方发送 我们把发送的改搞一点
     twist_stamped_pub_->publish(*calculateTwistCommand());
 
     if (!loop_rate_.sleep())
@@ -223,6 +224,10 @@ void PoseTracking::readROSParams()
 void PoseTracking::initializePID(const PIDConfig& pid_config, std::vector<control_toolbox::Pid>& pid_vector)
 {
   bool use_anti_windup = true;
+  // /opt/ros/humble/include/control_toolbox/control_toolbox/pid.hpp
+  // use_anti_windup 也就是 是否开启积分饱和
+  // windup_limit 是对积分项目 也就是 pid 中的 i 进行的控制
+  // i 由于要积分 可能会越积越大 这个就是用于限制他的
   pid_vector.push_back(control_toolbox::Pid(pid_config.k_p, pid_config.k_i, pid_config.k_d, pid_config.windup_limit,
                                             -pid_config.windup_limit, use_anti_windup));
 }
@@ -317,6 +322,9 @@ geometry_msgs::msg::TwistStamped::ConstSharedPtr PoseTracking::calculateTwistCom
 
   double ang_vel_magnitude =
       cartesian_orientation_pids_[0].computeCommand(*angular_error_, loop_rate_.period().count());
+  // 方向没变 只是大小变化了
+  // 这是个位置式而不是增量式的pid 
+  // 可能是因为我们发送的就是角速度线速度 不是增量
   twist.angular.x = ang_vel_magnitude * axis_angle.axis()[0];
   twist.angular.y = ang_vel_magnitude * axis_angle.axis()[1];
   twist.angular.z = ang_vel_magnitude * axis_angle.axis()[2];
@@ -404,6 +412,7 @@ void PoseTracking::resetTargetPose()
 
 bool PoseTracking::getCommandFrameTransform(geometry_msgs::msg::TransformStamped& transform)
 {
+  // 这个地方是正交矩阵没用
   return servo_->getCommandFrameTransform(transform);
 }
 }  // namespace moveit_servo

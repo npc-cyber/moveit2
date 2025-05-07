@@ -84,6 +84,7 @@ namespace moveit_simple_controller_manager
 {
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit.plugins.moveit_simple_controller_manager");
 static const std::string PARAM_BASE_NAME = "moveit_simple_controller_manager";
+// 这个地方也是继承父类的
 class MoveItSimpleControllerManager : public moveit_controller_manager::MoveItControllerManager
 {
 public:
@@ -178,6 +179,7 @@ public:
         }
         else if (type == "FollowJointTrajectory")
         {
+          // 创建了一个机械臂轨迹执行器
           new_handle = std::make_shared<FollowJointTrajectoryControllerHandle>(node_, controller_name, action_ns);
           RCLCPP_INFO_STREAM(LOGGER, "Added FollowJointTrajectory controller for " << controller_name);
           controllers_[controller_name] = new_handle;

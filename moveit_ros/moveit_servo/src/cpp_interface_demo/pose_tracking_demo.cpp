@@ -158,7 +158,7 @@ int main(int argc, char** argv)
 
   // Publish target pose
   target_pose.header.stamp = node->now();
-  target_pose_pub->publish(target_pose);
+  // target_pose_pub->publish(target_pose);
 
   // Run the pose tracking in a new thread
   std::thread move_to_pose_thread([&tracker, &lin_tol, &rot_tol] {
@@ -175,7 +175,7 @@ int main(int argc, char** argv)
     // This is a dynamic pose target
     target_pose.pose.position.z += 0.0004;
     target_pose.header.stamp = node->now();
-    target_pose_pub->publish(target_pose);
+    // target_pose_pub->publish(target_pose);
 
     loop_rate.sleep();
   }

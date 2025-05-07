@@ -78,7 +78,9 @@ geometry_msgs::msg::TransformStamped convertIsometryToTransform(const Eigen::Iso
  * @param[in] commanded_twist     The commanded Cartesian twist
  * @param[in] svd                 A singular value decomposition of the Jacobian
  * @param[in] pseudo_inverse      The pseudo-inverse of the Jacobian
+ * 达到此条件 停止
  * @param[in] hard_stop_singularity_threshold  Halt if condition(Jacobian) > hard_stop_singularity_threshold
+ * 达到此条件减速
  * @param[in] lower_singularity_threshold      Decelerate if condition(Jacobian) > lower_singularity_threshold
  * @param[in] leaving_singularity_threshold_multiplier      Allow faster motion away from singularity
  * @param[in, out] clock          A ROS clock, for logging
